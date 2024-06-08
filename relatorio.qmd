@@ -1,0 +1,152 @@
+---
+title: "LASSO, AdaLASSO e WLAdaLASSO em Séries Temporais"
+format: html
+editor: visual
+---
+
+# Seleção de Ordem de Parâmetros
+
+E importante fixar que nesse estudo trabalharemos apenas com o modelo ARIMA, onde métodos de regularização foram utilizados para seleção de ordem de parâmetros e de covariáveis
+
+## Método Usual
+
+O principal e mais simples método para seleção de ordem de coeficientes para um modelo de séries temporias consiste na avalição das funções de Autocorrelação e Autocorrelação Parcial, chamadas de FAC e FACP respectivamente
+
+## Stepwise
+
+## Regularização
+
+# Modelagem do Isolamento Social em SP
+
+Para aplicação do métodos descrito na seção anterior em dados reais, os valores diários de isolamento social em SP durante a pandemia utilizados
+
+Os dados foram retirados do site [https://www.saopaulo.sp.gov.br/coronavirus/isolamento/](https://www.saopaulo.sp.gov.br/coronavirus/isolamento/), onde o conjunto de dados possui valores dia a dia a respeito do nível de isolamento social no estado de São Paulo durante os anos de 2020 a 2022.
+
+
+```{r}
+library(tidyverse)
+library(fpp3)
+
+
+df_isolamento_sujo = readxl::read_xlsx("D:/Consultoria/Pablo_Econo/pablo_series/files/isolamento_sp.xlsx") 
+
+df_isolamento_limpo_mun = df_isolamento_sujo |>
+  janitor::row_to_names(1) |>
+  rename(mun = 1, 
+         cod_ibge = 2, 
+         pop_estimada = 3,
+         UF = 4) |>
+  tidyr::pivot_longer(-c(mun, cod_ibge, pop_estimada, UF)) |>
+  mutate(date = name |>
+           lubridate::dmy(),
+         .keep = 'unused') |>
+  relocate(date, .before = value) |>
+  rename(tx_isolamento = value) |>
+  mutate(
+    across(
+      where(is.character), 
+      ~. |>
+        stringr::str_to_lower()
+    )
+  ) |>
+  mutate(
+    across(c(cod_ibge, pop_estimada, tx_isolamento),
+           ~. |> 
+             as.numeric()
+    )
+  )
+
+df_isolamento_limpo_sp = df_isolamento_limpo_mun |>
+  group_by(date) |>
+  dplyr::summarise(ind_media_iso = mean(tx_isolamento, na.rm = T))
+```
+
+```{r}
+df_isolamento_limpo_sp |>
+  rmarkdown::paged_table()
+```
+
+```{r}
+ts_iso_sp = df_isolamento_limpo_sp |>
+  as_tsibble(index = date) |>
+  fill_gaps() |>
+  tidyr::fill(ind_media_iso) 
+```
+
+```{r}
+ts_iso_sp |> 
+  autoplot() +
+  theme_minimal() +
+  labs(y = 'Índice Isolamento',
+       x = 'Dia',
+       title = 'Isolamento Social por Dia em SP')
+``` 
+
+
+```{r}
+vector_data = ts_iso_sp |>
+  dplyr::pull(ind_media_iso)
+ 
+lasso_ar = vector_data |>
+  tibble::as_tibble() |>
+  rename(y = value) |>
+  dplyr::mutate(lag1 = dplyr::lead(y),
+                lag2 = dplyr::lead(y, 2),
+                lag3 = dplyr::lead(y, 3),
+                lag4 = dplyr::lead(y, 4), 
+                lag5 = dplyr::lead(y, 5)) |>
+  dplyr::mutate(
+    across(c(1:6),
+    ~dplyr::case_when(is.na(.) ~ 0, .default = .)
+    )
+  ) 
+
+
+lasso_ar_select = glmnet::glmnet(y = lasso_ar[,1] |> as.matrix(), 
+               x = lasso_ar[,2:6] |> as.matrix(), 
+               alpha = 1, intercept = F) 
+
+
+lags_coef = lasso_ar_select |> 
+  coef(s = 0.1) |>
+  as.vector()
+
+lags_coef = which(lags_coef == 0)[2] - 2
+
+```
+
+
+```{r}
+arima_model = arima(vector_data, order = c(lags_coef, 0, 6 - lags_coef))
+
+lasso_ma = arima_model$residuals |>
+  tibble::as_tibble() |>
+  rename(y = x) |>
+  dplyr::mutate(ma1 = dplyr::lead(y),
+                ma2 = dplyr::lead(y, 2),
+                ma3 = dplyr::lead(y, 3),
+                ma4 = dplyr::lead(y, 4), 
+                ma5 = dplyr::lead(y, 5)) |>
+  dplyr::mutate(
+    across(c(1:6),
+           ~dplyr::case_when(is.na(.) ~ 0, .default = .)
+    )
+  ) 
+
+
+teste_ar_ma = lasso_ar |>
+  dplyr::bind_cols(lasso_ma |>
+                     select(-y)) 
+
+lasso_ar_ma_select = glmnet::glmnet(y = teste_ar_ma[,1] |> 
+                                      as.matrix(), 
+                                    x = teste_ar_ma[,2:11] |> 
+                                      as.matrix(), 
+                                    alpha = 1, intercept = F) 
+
+
+lasso_ar_ma_select |> 
+  coef(s = 0.1)
+ 
+```
+
